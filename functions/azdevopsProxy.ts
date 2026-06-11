@@ -192,6 +192,10 @@ function requireString(value: unknown, fieldName: string): string {
   return value.trim();
 }
 
+function isPositiveInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value > 0;
+}
+
 function normalizeMaxPages(value: unknown): number {
   if (value === undefined) return DEFAULT_MAX_PAGES;
   if (typeof value !== "number" || !Number.isInteger(value) || value < 1 || value > MAX_ALLOWED_PAGES) {
@@ -205,7 +209,7 @@ function normalizeMaxPages(value: unknown): number {
 }
 
 function requirePositiveInteger(value: unknown, fieldName: string): number {
-  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+  if (!isPositiveInteger(value)) {
     throw new ProxyError(`${fieldName} must be a positive integer`, 400, "VALIDATION_ERROR");
   }
   return value;
@@ -272,10 +276,13 @@ function shouldRetryStatus(status: number): boolean {
 
 function isRetryableFetchError(err: unknown): boolean {
   if (err instanceof DOMException) {
-    return err.name === "AbortError";
+    return err.name === "AbortError" || /timeout|timed out/i.test(err.message);
   }
   if (err instanceof TypeError) {
     return /fetch|network|socket|timeout|timed out|failed/i.test(err.message);
+  }
+  if (err instanceof Error) {
+    return /timeout|timed out|network/i.test(err.message);
   }
   return err instanceof ProxyError && err.retryable;
 }
@@ -292,6 +299,9 @@ function getRetryDelayMs(attempt: number, retryAfter?: string | null): number {
 function pagedWiqlQuery(wiql: string, lastSeenId?: number): string {
   if (lastSeenId === undefined) {
     return wiql;
+  }
+  if (!isPositiveInteger(lastSeenId)) {
+    throw new ProxyError("Invalid pagination cursor", 500, "INVALID_CURSOR");
   }
   const orderByToken = " ORDER BY ";
   const upperWiql = wiql.toUpperCase();
@@ -406,6 +416,9 @@ async function runWiqlQuery(
       break;
     }
     lastSeenId = pageIds[pageIds.length - 1];
+    if (!isPositiveInteger(lastSeenId)) {
+      throw new ProxyError("Invalid work item id in WIQL response", 502, "INVALID_ADO_RESPONSE");
+    }
     if (page === maxPages - 1) {
       truncated = true;
       break;
@@ -561,7 +574,7 @@ export default async function handler(req: Request): Promise<Response> {
         const ids: number[] = [
           ...new Set(
             (data.workItemRelations || [])
-              .flatMap((r) => [r.source?.id, r.target?.id].filter((id): id is number => id !== undefined && id > 0))
+              .flatMap((r) => [r.source?.id, r.target?.id].filter(isPositiveInteger))
           ),
         ];
 
