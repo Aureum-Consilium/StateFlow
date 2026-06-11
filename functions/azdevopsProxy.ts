@@ -208,6 +208,15 @@ function validateDateLiteral(value: unknown, fieldName: string): string | undefi
   return value;
 }
 
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.trim() !== "";
+}
+
+async function readErrorBody(response: Response, maxChars = 2000): Promise<string> {
+  const body = await response.text();
+  return body.length > maxChars ? `${body.slice(0, maxChars)}...` : body;
+}
+
 function normalizeFilters(value: unknown): WorkItemFilters | undefined {
   if (value === undefined) return undefined;
   if (!isRecord(value)) {
@@ -225,7 +234,7 @@ function normalizeFilters(value: unknown): WorkItemFilters | undefined {
 
   let teamAreaPaths: string[] | undefined;
   if (value.teamAreaPaths !== undefined) {
-    if (!Array.isArray(value.teamAreaPaths) || value.teamAreaPaths.some((p) => typeof p !== "string" || p.trim() === "")) {
+    if (!Array.isArray(value.teamAreaPaths) || value.teamAreaPaths.some((p) => !isNonEmptyString(p))) {
       throw new ProxyError("filters.teamAreaPaths must be an array of strings", 400, "VALIDATION_ERROR");
     }
     teamAreaPaths = value.teamAreaPaths.map((p) => p.trim());
@@ -286,7 +295,7 @@ async function adoFetch<T>(url: string, pat: string, options: RequestInit = {}):
       });
 
       if (!res.ok) {
-        const text = sanitizeForLog(await res.text(), pat);
+        const text = sanitizeForLog(await readErrorBody(res), pat);
         const retryable = shouldRetryStatus(res.status);
         if (retryable && attempt < MAX_FETCH_RETRIES) {
           await sleep(getRetryDelayMs(attempt, res.headers.get("retry-after")));
@@ -530,7 +539,7 @@ export default async function handler(req: Request): Promise<Response> {
         const ids: number[] = [
           ...new Set(
             (data.workItemRelations || [])
-              .flatMap((r) => [r.source?.id, r.target?.id].filter((id): id is number => id !== undefined))
+              .flatMap((r) => [r.source?.id, r.target?.id].filter((id) => id !== undefined))
           ),
         ];
 
