@@ -58,6 +58,10 @@ const MAX_FETCH_RETRIES = 3;
 const BACKOFF_BASE_MS = 300;
 const BACKOFF_MAX_MS = 5000;
 const MIN_REQUEST_INTERVAL_MS = 75;
+const ERROR_BODY_MAX_CHARS = 2000;
+const ERROR_BODY_TRUNCATION_SUFFIX = "...";
+const ISO_DATE_TIME_REGEX =
+  /^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})?)?$/;
 const ALLOWED_ACTIONS = [
   "fetchProjects",
   "fetchTeams",
@@ -211,7 +215,7 @@ function validateDateLiteral(value: unknown, fieldName: string): string | undefi
   if (value === undefined) return undefined;
   if (
     typeof value !== "string" ||
-    !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(value) ||
+    !ISO_DATE_TIME_REGEX.test(value) ||
     Number.isNaN(Date.parse(value))
   ) {
     throw new ProxyError(`Invalid ${fieldName} date format`, 400, "VALIDATION_ERROR");
@@ -223,9 +227,11 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim() !== "";
 }
 
-async function readErrorBody(response: Response, maxChars = 2000): Promise<string> {
+async function readErrorBody(response: Response, maxChars = ERROR_BODY_MAX_CHARS): Promise<string> {
   const body = await response.text();
-  return body.length > maxChars ? `${body.slice(0, maxChars)}...` : body;
+  return body.length > maxChars
+    ? `${body.slice(0, maxChars)}${ERROR_BODY_TRUNCATION_SUFFIX}`
+    : body;
 }
 
 function normalizeFilters(value: unknown): WorkItemFilters | undefined {
@@ -262,6 +268,16 @@ function normalizeFilters(value: unknown): WorkItemFilters | undefined {
 
 function shouldRetryStatus(status: number): boolean {
   return status === 429 || status >= 500;
+}
+
+function isRetryableFetchError(err: unknown): boolean {
+  if (err instanceof DOMException) {
+    return err.name === "AbortError";
+  }
+  if (err instanceof TypeError) {
+    return /fetch|network|socket|timeout|timed out|failed/i.test(err.message);
+  }
+  return err instanceof ProxyError && err.retryable;
 }
 
 function getRetryDelayMs(attempt: number, retryAfter?: string | null): number {
@@ -306,7 +322,7 @@ async function adoFetch<T>(url: string, pat: string, options: RequestInit = {}):
       });
 
       if (!res.ok) {
-        const text = sanitizeForLog(await readErrorBody(res), pat);
+        const text = sanitizeForLog(await readErrorBody(res, ERROR_BODY_MAX_CHARS), pat);
         const retryable = shouldRetryStatus(res.status);
         if (retryable && attempt < MAX_FETCH_RETRIES) {
           await sleep(getRetryDelayMs(attempt, res.headers.get("retry-after")));
@@ -319,10 +335,7 @@ async function adoFetch<T>(url: string, pat: string, options: RequestInit = {}):
       }
       return (await res.json()) as T;
     } catch (err: unknown) {
-      const retryable =
-        err instanceof DOMException ||
-        err instanceof TypeError ||
-        (err instanceof ProxyError && err.retryable);
+      const retryable = isRetryableFetchError(err);
       if (retryable && attempt < MAX_FETCH_RETRIES) {
         await sleep(getRetryDelayMs(attempt));
         continue;
