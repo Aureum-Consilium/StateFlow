@@ -200,9 +200,20 @@ function normalizeMaxPages(value: unknown): number {
   return value;
 }
 
+function requirePositiveInteger(value: unknown, fieldName: string): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
+    throw new ProxyError(`${fieldName} must be a positive integer`, 400, "VALIDATION_ERROR");
+  }
+  return value;
+}
+
 function validateDateLiteral(value: unknown, fieldName: string): string | undefined {
   if (value === undefined) return undefined;
-  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}(T.*)?$/.test(value)) {
+  if (
+    typeof value !== "string" ||
+    !/^\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})?)?$/.test(value) ||
+    Number.isNaN(Date.parse(value))
+  ) {
     throw new ProxyError(`Invalid ${fieldName} date format`, 400, "VALIDATION_ERROR");
   }
   return value;
@@ -526,10 +537,8 @@ export default async function handler(req: Request): Promise<Response> {
 
       // ── Fetch by Epic ID (recursive tree) ─────────────────────────────────
       case "fetchByEpicId": {
-        if (typeof requestBody.epicId !== "number" || !Number.isInteger(requestBody.epicId) || requestBody.epicId <= 0) {
-          throw new ProxyError("epicId must be a positive integer", 400, "VALIDATION_ERROR");
-        }
-        const wiql = `SELECT [System.Id] FROM WorkItemLinks WHERE (SOURCE.[System.Id] = ${requestBody.epicId}) MODE (Recursive) ORDER BY [System.Id]`;
+        const epicId = requirePositiveInteger(requestBody.epicId, "epicId");
+        const wiql = `SELECT [System.Id] FROM WorkItemLinks WHERE (SOURCE.[System.Id] = ${epicId}) MODE (Recursive) ORDER BY [System.Id]`;
         const url = `https://dev.azure.com/${requestBody.org}/_apis/wit/wiql?api-version=${API_VERSION}`;
         const data = await adoFetch<WorkItemLinksResponse>(url, requestBody.pat, {
           method: "POST",
@@ -539,7 +548,7 @@ export default async function handler(req: Request): Promise<Response> {
         const ids: number[] = [
           ...new Set(
             (data.workItemRelations || [])
-              .flatMap((r) => [r.source?.id, r.target?.id].filter((id) => id !== undefined))
+              .flatMap((r) => [r.source?.id, r.target?.id].filter((id): id is number => id !== undefined && id > 0))
           ),
         ];
 
